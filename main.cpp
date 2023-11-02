@@ -1,3 +1,4 @@
+import <limits>;
 import <optional>;
 import <iostream>;
 import <string>;
@@ -8,15 +9,10 @@ import <ranges>;
 import <concepts>;
 import <print>;
 import <functional>;
+import <algorithm>;
 
 import "vulkan_config.h";
 
-
-// void print(std::string_view fmtStr, auto&&... args) {
-//     // format函数的第一个参数只支持编译期常量
-//     // 因此使用vformat函数，其本质是不进行编译器格式检查的format
-//     std::cout << std::vformat(fmtStr, std::make_format_args(args...));
-// }
 
 
 template<uint32_t index, typename Callable>
@@ -103,6 +99,8 @@ private:
 #else
 	static constexpr bool enableValiLayer = true;
 	static constexpr bool enableDebugOutput = true;
+	static constexpr VkDebugUtilsMessageSeverityFlagBitsEXT vkMessageSeverityLevel = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
+	static constexpr VkDebugUtilsMessageTypeFlagBitsEXT vkMessageTypes = VK_DEBUG_UTILS_MESSAGE_TYPE_FLAG_BITS_MAX_ENUM_EXT;
 #endif
 
 private:
@@ -139,6 +137,7 @@ private:
 private:
 	/*
 	 * surface 相关
+	 * 借助 instance 创建 surface
 	 */
 	VkSurfaceKHR surface_;
 
@@ -147,14 +146,15 @@ private:
 
 private:
 /*
- * device 和 queue 相关
- * 借助 instance 得到可用的一个 physical device，
- * 得到所有 需要的 queueFamily 的类型与索引映射
- * 创建 logical device
+ * physical device 相关
+ * 借助 instance 得到所有 physical device
+ * 与 surface 结合得到 physical device 的属性，并选择一个合适的
+ * features, queue family indices , extensions 用于创建 logical device
+ * surface capability, format, present mode 用于创建 swap chain
  */
 	VkPhysicalDevice physicalDevice_;
+
 	VkPhysicalDeviceFeatures physicalDeviceFeatures_;
-	
 	struct QueueFamilyIndices
 	{
 		uint32_t graphicsFamily;
@@ -164,9 +164,27 @@ private:
 
 	std::vector<const char*> deviceExtensions_;
 
+	VkSurfaceCapabilitiesKHR surfaceCapabilities_;
+	VkSurfaceFormatKHR surfaceFormat_;
+	VkPresentModeKHR surfacePresentMode_;
+
 	// 得到合格的 physical device 及其相关信息，用于之后的 device 创建
 	void pickPhysicalDevice();
-	bool pickCertainPhysicalDevice(VkPhysicalDevice device) noexcept;
+
+	// 获得所有可能需要提供的 physical device 级别的 extension
+	// VK_KHR_SWAPCHAIN_EXTENSION_NAME 对应的扩展用于支持交换链
+	static std::vector<const char*> getRequiredDeviceExtensions(VkPhysicalDevice device);
+
+	static QueueFamilyIndices getQueueFamilyIndices(VkPhysicalDevice device, VkSurfaceKHR surface);
+
+	// 根据 device, surface 获得需要的 capability(extent, image count), format, present mode
+	static std::tuple<VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkPresentModeKHR> getSwapChainSupport(
+		VkPhysicalDevice device, VkSurfaceKHR surface);
+
+private:
+/* logical device 相关
+ * 创建 logical device, 得到 queue
+ */
 
 	VkDevice device_;
 	struct Queues
@@ -180,12 +198,16 @@ private:
 	void createLogicalDevice();
 	void destroyLogicalDevice() noexcept;
 
-	// 获得所有可能需要提供的 physical device 级别的 extension
-	// VK_KHR_SWAPCHAIN_EXTENSION_NAME 对应的扩展用于支持交换链
-	static std::vector<const char*> getRequiredDeviceExtensions(VkPhysicalDevice device);
+private:
+/*
+ * swap chain 相关
+ */
+	VkSwapchainKHR swapChain_;
+	std::vector<VkImage> swapChainImages_;
 
+	void createSwapChain();
+	void destroySwapChain() noexcept;
 
-    
 };
 
 VkResult VulkanApplication::createDebugUtilsMessengerEXT(VkInstance instance,
@@ -324,7 +346,6 @@ void VulkanApplication::createInstance(const std::string_view appName) {
 }
 
 void VulkanApplication::destroyInstance() noexcept {
-	if (instance_ == VK_NULL_HANDLE) return;
 	if constexpr (enableValiLayer) {
 		destroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
 	}
@@ -336,71 +357,42 @@ void VulkanApplication::pickPhysicalDevice()
 {
 	std::vector<VkPhysicalDevice> devices = getVkResource(vkEnumeratePhysicalDevices, instance_);
 	for(const auto device: devices) {
-		if (pickCertainPhysicalDevice(device)) {
+		try {
+			/*
+			 * 1. 检查 property
+			 * 2. 检查 feature
+			 * 3. 检查 extension
+			 * 4. 检查 queue family
+			 * 5. 检查 swap chain support
+			 * 6. 赋值 
+			 */
+			VkPhysicalDeviceProperties deviceProperties;
+			vkGetPhysicalDeviceProperties(device, &deviceProperties);
+			if (deviceProperties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+				throw std::runtime_error("device not satisfied VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU");
+			}
+
+			VkPhysicalDeviceFeatures deviceFeatures;
+			vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+			if (deviceFeatures.geometryShader != VK_TRUE) {
+				throw std::runtime_error("device not satisfied geometryShader feature");
+			}
+
+			auto deviceExtensions = getRequiredDeviceExtensions(device);
+			auto queueFamilyIndices = getQueueFamilyIndices(device, surface_);
+			auto swapChainSupports = getSwapChainSupport(device, surface_);
+
+			physicalDevice_			= device;
+			physicalDeviceFeatures_ = deviceFeatures;
+			deviceExtensions_		= std::move(deviceExtensions);
+			queueFamilyIndices_		= queueFamilyIndices;
+			surfaceCapabilities_	= std::get<0>(swapChainSupports);
+			surfaceFormat_			= std::get<1>(swapChainSupports);
+			surfacePresentMode_		= std::get<2>(swapChainSupports);
 			return;
-		}
+		}catch (const std::exception& e) {}
 	}
 	throw std::runtime_error("can not find suitable physical device");
-}
-
-bool VulkanApplication::pickCertainPhysicalDevice(const VkPhysicalDevice device) noexcept
-{
-/*
- * 1. 检查 property
- * 2. 检查 feature
- * 3. 检查 extension
- * 4. 得到想要的队列族
- * 5. 赋值 device features, physical device, queue family indices, device extensions
- */
-	VkPhysicalDeviceProperties deviceProperties;
-	vkGetPhysicalDeviceProperties(device, &deviceProperties);
-	if(deviceProperties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-		return false;
-	}
-
-	VkPhysicalDeviceFeatures deviceFeatures;
-	vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
-	if(deviceFeatures.geometryShader != VK_TRUE) {
-		return false;
-	}
-
-	std::vector<const char*> extensions;
-	try {
-		extensions = getRequiredDeviceExtensions(device);
-	} catch (const std::exception& e) {
-		return false;
-	}
-	std::vector<VkQueueFamilyProperties> queueFamilies = getVkResource(vkGetPhysicalDeviceQueueFamilyProperties, device);
-
-	QueueFamilyIndices queueFamilyIndices {};
-	bool graphic = false;
-	bool present = false;
-	
-	for (const auto& [i, queueFamily] : std::views::enumerate(queueFamilies)) {
-		if (!graphic && queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-			queueFamilyIndices.graphicsFamily = i;
-			graphic = true;
-		}
-		if(!present) {
-			VkBool32 presentSupport = false;
-			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface_, &presentSupport);
-			if(presentSupport == VK_TRUE) {
-				queueFamilyIndices.presentFamily = i;
-				present = true;
-			}
-		}
-		if(graphic && present) {
-			break;
-		}
-	}
-	if(!graphic || !present) {
-		return false;
-	}
-	physicalDevice_ = device;
-	physicalDeviceFeatures_ = deviceFeatures;
-	deviceExtensions_ = extensions;
-	queueFamilyIndices_ = queueFamilyIndices;
-	return true;
 }
 
 void VulkanApplication::createLogicalDevice()
@@ -411,8 +403,8 @@ void VulkanApplication::createLogicalDevice()
 	 *
 	 */
 
-	 // 一个 queueCreateInfo 可以创建多个来自于 相同 队列族的队列
-	 // queueCreateInfos 中的每个 queueCreateInfo 需要指定不同的队列族
+	// 一个 queueCreateInfo 可以创建多个来自于 相同 队列族的队列
+	// queueCreateInfos 中的每个 queueCreateInfo 需要指定不同的队列族
 	std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
 
 	std::vector<uint32_t> indices{ queueFamilyIndices_.graphicsFamily, queueFamilyIndices_.presentFamily };
@@ -434,7 +426,7 @@ void VulkanApplication::createLogicalDevice()
 			.queueFamilyIndex = index,
 			.queueCount = count,
 			.pQueuePriorities = index2PrioritiesMap[index].data(),
-			});
+		});
 	}
 
 	VkDeviceCreateInfo createInfo{
@@ -445,9 +437,6 @@ void VulkanApplication::createLogicalDevice()
 		.ppEnabledExtensionNames = deviceExtensions_.data(),
 		.pEnabledFeatures = &physicalDeviceFeatures_,
 	};
-
-	// 与 instance 层不同， device 层不需要任何扩展
-	createInfo.enabledExtensionCount = 0;
 
 	// 旧实现在 (instance, physical device) 和 (logic device以上) 两个层面有不同的 layer, 而在新实现中合并了
 	// 不再需要定义 enabledLayerCount 和 ppEnabledLayerNames
@@ -473,8 +462,86 @@ void VulkanApplication::createLogicalDevice()
 
 void VulkanApplication::destroyLogicalDevice() noexcept
 {
-	if (device_ == VK_NULL_HANDLE) return;
 	vkDestroyDevice(device_, nullptr);
+}
+
+void VulkanApplication::createSwapChain()
+{
+	uint32_t imageCount = surfaceCapabilities_.minImageCount + 1;
+	// maxImageCount == 0意味着没有最大值
+	if(surfaceCapabilities_.maxImageCount != 0) {
+		imageCount = std::min(imageCount, surfaceCapabilities_.maxImageCount);
+	}
+
+	VkExtent2D extent{};
+	if (surfaceCapabilities_.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+		extent = surfaceCapabilities_.currentExtent;
+	}else {
+		int width, height;
+		glfwGetFramebufferSize(pWindow_, &width, &height);
+		extent = {
+			static_cast<uint32_t>(width),
+			static_cast<uint32_t>(height)
+		};
+		extent.width = std::clamp(extent.width, surfaceCapabilities_.minImageExtent.width, surfaceCapabilities_.maxImageExtent.width);
+		extent.height = std::clamp(extent.height, surfaceCapabilities_.minImageExtent.height, surfaceCapabilities_.maxImageExtent.height);
+	}
+
+	VkSwapchainCreateInfoKHR createInfo{
+		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+		.surface = surface_,
+		.minImageCount = imageCount,
+		.imageFormat = surfaceFormat_.format,
+		.imageColorSpace = surfaceFormat_.colorSpace,
+		.imageExtent = extent,
+		// 不整 3D 应用程序的话就设置为1
+		.imageArrayLayers = 1,
+		/*
+		 * VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: 交换链的图像直接用于渲染
+		 * VK_IMAGE_USAGE_TRANSFER_DST_BIT : 先渲染到单独的图像上（以便进行后处理），然后传输到交换链图像
+		 */
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+		.preTransform = surfaceCapabilities_.currentTransform,
+		// alpha通道是否应用于与窗口系统中的其他窗口混合
+		// 简单地忽略alpha通道
+		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+		.presentMode = surfacePresentMode_,
+		// 不关心被遮挡的像素的颜色
+		.clipped = VK_TRUE,
+		.oldSwapchain = VK_NULL_HANDLE,
+	};
+
+	/*
+	 * VK_SHARING_MODE_CONCURRENT: 图像可以跨多个队列族使用，而无需明确的所有权转移
+	 * VK_SHARING_MODE_EXCLUSIVE: 一个图像一次由一个队列族所有，在将其用于另一队列族之前，必须明确转移所有权
+	 */
+	const std::array<uint32_t, 2> queueFamilyIndices = { queueFamilyIndices_.graphicsFamily, queueFamilyIndices_.presentFamily};
+	if (queueFamilyIndices_.graphicsFamily != queueFamilyIndices_.presentFamily) {
+		createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+		createInfo.queueFamilyIndexCount = 2;
+		createInfo.pQueueFamilyIndices = queueFamilyIndices.data();
+	}else {
+		createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		createInfo.queueFamilyIndexCount = 0; 
+		createInfo.pQueueFamilyIndices = nullptr; 
+	}
+
+	if (vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapChain_) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create swap chain");
+	}
+
+	if constexpr (enableDebugOutput) {
+		std::println("the info of created swap chain:");
+		std::println("image count:{}", imageCount);
+		std::println("extent:({},{})", extent.width, extent.height);
+	}
+
+	swapChainImages_ = getVkResource(vkGetSwapchainImagesKHR, device_, swapChain_);
+}
+
+void VulkanApplication::destroySwapChain() noexcept
+{
+	vkDestroySwapchainKHR(device_, swapChain_, nullptr);
 }
 
 std::vector<const char*> VulkanApplication::getRequiredDeviceExtensions(VkPhysicalDevice device)
@@ -487,9 +554,9 @@ std::vector<const char*> VulkanApplication::getRequiredDeviceExtensions(VkPhysic
 	std::vector<VkExtensionProperties> availableExtensions = getVkResource(vkEnumerateDeviceExtensionProperties, device, nullptr);
 
 	if constexpr (enableDebugOutput) {
-		std::print("the available {} device extensions are:\n", availableExtensions.size());
+		std::println("the available {} device extensions are:", availableExtensions.size());
 		for (const auto& [extensionName, specVersion] : availableExtensions) {
-			std::print("{} (version {})\n", extensionName, specVersion);
+			std::println("{} (version {})", extensionName, specVersion);
 		}
 	}
 
@@ -516,6 +583,62 @@ std::vector<const char*> VulkanApplication::getRequiredDeviceExtensions(VkPhysic
 	return requiredExtensions;
 }
 
+VulkanApplication::QueueFamilyIndices VulkanApplication::getQueueFamilyIndices(VkPhysicalDevice device, VkSurfaceKHR surface)
+{
+	std::vector<VkQueueFamilyProperties> queueFamilies = getVkResource(vkGetPhysicalDeviceQueueFamilyProperties, device);
+
+	QueueFamilyIndices queueFamilyIndices{};
+	bool graphic = false;
+	bool present = false;
+
+	auto pGraphicsFamily = std::ranges::find_if(queueFamilies, [](const auto& family) {
+		return family.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+	});
+	if (pGraphicsFamily == queueFamilies.end()) throw std::runtime_error("can not found queue family which satisfied VK_QUEUE_GRAPHICS_BIT");
+	queueFamilyIndices.graphicsFamily = pGraphicsFamily - queueFamilies.begin();
+
+	auto enumQueueFamilies = queueFamilies | std::views::enumerate;
+	auto pPresentFamily = std::ranges::find_if(enumQueueFamilies, [device, surface](const auto& pair) {
+		const auto& [index, family] = pair;
+		VkBool32 presentSupport = false;
+		vkGetPhysicalDeviceSurfaceSupportKHR(device, index, surface, &presentSupport);
+		return presentSupport == VK_TRUE;
+	});
+	if (pPresentFamily == enumQueueFamilies.end()) throw std::runtime_error("can not found queue family which satisfied SurfaceSupport");
+	queueFamilyIndices.presentFamily = pPresentFamily - enumQueueFamilies.begin();
+
+	if constexpr (enableDebugOutput) {
+		std::println("choose queue family {} for graphics, {} for present",
+			queueFamilyIndices.graphicsFamily, queueFamilyIndices.presentFamily);
+	}
+	return queueFamilyIndices;
+}
+
+std::tuple<VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkPresentModeKHR> VulkanApplication::getSwapChainSupport(
+	VkPhysicalDevice device, VkSurfaceKHR surface)
+{
+	VkSurfaceCapabilitiesKHR capabilities;
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &capabilities);
+
+	std::vector<VkSurfaceFormatKHR> formats = getVkResource(vkGetPhysicalDeviceSurfaceFormatsKHR, device, surface);
+	auto pFormat = std::ranges::find_if(formats, [](auto format) {
+		return format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+	});
+	if (pFormat == formats.end()) throw std::runtime_error("no suitable format");
+
+	std::vector<VkPresentModeKHR> presentModes = getVkResource(vkGetPhysicalDeviceSurfacePresentModesKHR, device, surface);
+	/*
+	 * VK_PRESENT_MODE_IMMEDIATE_KHR: 图像提交后直接渲染到屏幕上
+	 * VK_PRESENT_MODE_FIFO_KHR: 有一个队列，队列以刷新率的速度消耗图像显示在屏幕上，图像提交后入队，队列满时等待（也即只能在 "vertical blank" 时刻提交图像）
+	 * VK_PRESENT_MODE_FIFO_RELAXED_KHR: 当图像提交时，若队列为空，就直接渲染到屏幕上，否则同上
+	 * VK_PRESENT_MODE_MAILBOX_KHR: 当队列满时，不阻塞而是直接将队中图像替换为已提交的图像
+	 */
+	auto pPresentMode = std::ranges::find(presentModes, VK_PRESENT_MODE_FIFO_KHR);
+	if(pPresentMode == presentModes.end()) throw std::runtime_error("no suitable present mode");
+
+	return { capabilities, *pFormat, *pPresentMode };
+}
+
 void VulkanApplication::createSurface()
 {
 	VkWin32SurfaceCreateInfoKHR createInfo{
@@ -527,14 +650,10 @@ void VulkanApplication::createSurface()
 	if(vkCreateWin32SurfaceKHR(instance_, &createInfo, nullptr, &surface_) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create surface!");
 	}
-	// if (glfwCreateWindowSurface(instance_, pWindow_, nullptr, &surface_) != VK_SUCCESS) {
-	// 	throw std::runtime_error("failed to create surface!");
-	// }
 }
 
 void VulkanApplication::destroySurface() noexcept
 {
-	if (surface_ == VK_NULL_HANDLE) return;
 	vkDestroySurfaceKHR(instance_, surface_, nullptr);
 }
 
@@ -544,15 +663,18 @@ VulkanApplication::VulkanApplication(const uint32_t width, const uint32_t height
 	instance_ = VK_NULL_HANDLE;
 	surface_ = VK_NULL_HANDLE;
 	device_ = VK_NULL_HANDLE;
+	swapChain_ = VK_NULL_HANDLE;
 	createWindow(width, height, appName);
 	createInstance(appName);
 	createSurface();
 	pickPhysicalDevice();
 	createLogicalDevice();
+	createSwapChain();
 }
 
 VulkanApplication::~VulkanApplication()
 {
+	destroySwapChain();
 	destroyLogicalDevice();
 	destroySurface();
 	destroyInstance();
@@ -569,9 +691,9 @@ std::vector<const char*> VulkanApplication::getRequiredLayers() {
 	std::vector<VkLayerProperties> availableLayers = getVkResource(vkEnumerateInstanceLayerProperties);
 
 	if constexpr (enableDebugOutput) {
-		std::print("the available {} layers are:\n", availableLayers.size());
+		std::println("the available {} layers are:", availableLayers.size());
 		for (const auto& [layerName, specVersion, implementationVersion, description] : availableLayers) {
-			std::print("{} (spec version {}, implementation version {}) : {} \n", layerName, specVersion, implementationVersion, description);
+			std::println("{} (spec version {}, implementation version {}) : {} ", layerName, specVersion, implementationVersion, description);
 		}
 	}
 
@@ -606,7 +728,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanApplication::debugHandler(
 	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
 	void* pUserData)
 {
-	if (messageSeverity <= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)return VK_FALSE;
+	if (messageSeverity < vkMessageSeverityLevel)return VK_FALSE;
+	if (!(messageType & vkMessageTypes)) return VK_FALSE;
 	/*
 	 * VkDebugUtilsMessageSeverityFlagBitsEXT : 严重性， VERBOSE, INFO, WARNING, ERROR (可以比较，越严重越大）
 	 * VkDebugUtilsMessageTypeFlagsEXT : 类型， GENERAL, VALIDATION, PERFORMANCE
@@ -626,10 +749,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanApplication::debugHandler(
 		case VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT: return "GENERAL";
 		case VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT: return "VALIDATION";
 		case VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: return "PERFORMANCE";
+		case VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT: return "DEVICE_ADDRESS_BINDING";
 		default: return "OTHER";
 		}
 	};
-	std::print("validation layer: ({},{}) {}\n",
+	std::println("validation layer: ({},{}) {}",
 	      serverityGetter(messageSeverity),
 	      typeGetter(messageType),
 	      pCallbackData->pMessage);
@@ -653,9 +777,9 @@ std::vector<const char*> VulkanApplication::getInstanceRequiredExtensions() {
 	std::vector<VkExtensionProperties> availableExtensions = getVkResource(vkEnumerateInstanceExtensionProperties, nullptr);
 
 	if constexpr (enableDebugOutput) {
-		std::print("the available {} extensions are:\n", availableExtensions.size());
+		std::println("the available {} extensions are:", availableExtensions.size());
 		for (const auto& [extensionName, specVersion] : availableExtensions) {
-			std::print("{} (version {})\n", extensionName, specVersion);
+			std::println("{} (version {})", extensionName, specVersion);
 		}
 	}
 
@@ -685,8 +809,8 @@ std::vector<const char*> VulkanApplication::getInstanceRequiredExtensions() {
 int main() {
 	try {
         std::string applicationName = "hello, vulkan!";
-        uint32_t width = 1920;
-        uint32_t height = 1080;
+        uint32_t width = 800;
+        uint32_t height = 600;
 		VulkanApplication application{width, height, applicationName };
 
 		glfwSetKeyCallback(application.pWindow(), [](GLFWwindow* pWindow, int key, int scancode, int action, int mods) {
