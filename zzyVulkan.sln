@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.7.34221.43
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "zzyVulkan", "zzyVulkan.vcxproj", "{8208193B-A33F-4F5A-A337-362CEC256CFF}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Debug|x64.ActiveCfg = Debug|x64
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Debug|x64.Build.0 = Debug|x64
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Debug|x86.ActiveCfg = Debug|Win32
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Debug|x86.Build.0 = Debug|Win32
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Release|x64.ActiveCfg = Release|x64
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Release|x64.Build.0 = Release|x64
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Release|x86.ActiveCfg = Release|Win32
+		{8208193B-A33F-4F5A-A337-362CEC256CFF}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {31F505E7-733A-4895-88CD-29F4E4FDD80A}
+	EndGlobalSection
+EndGlobal
